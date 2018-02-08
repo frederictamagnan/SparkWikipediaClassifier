@@ -1,0 +1,199 @@
+#########################################
+# Spark Example using Simple Wikipedia Json data
+#########################################
+
+# remove spark heavy logging
+log4j = sc._jvm.org.apache.log4j
+log4j.LogManager.getRootLogger().setLevel(log4j.Level.ERROR)
+
+# HDFS Base path for simple wikipedia project
+base_path = '/shared/wikipedia/simple'
+
+# Cached dataframe from json
+wksp = sqlContext.read.json(base_path)
+wksp.cache()
+
+
+ #root
+ #|-- bytes: long (nullable = true)
+ #|-- id: long (nullable = true)
+ #|-- minor: boolean (nullable = true)
+ #|-- page_id: long (nullable = true)
+ #|-- page_namespace: long (nullable = true)
+ #|-- page_redirect: string (nullable = true)
+ #|-- page_restrictions: string (nullable = true)
+ #|-- page_title: string (nullable = true)
+ #|-- parent_id: long (nullable = true)
+ #|-- sha1: string (nullable = true)
+ #|-- timestamp: string (nullable = true)
+ #|-- user_id: long (nullable = true)
+ #|-- user_user_text: string (nullable = true)
+
+
+
+
+
+# Creation d'un dataframe bis avec les attributs page_id, namespace, user_id
+d1=wksp.select(wksp.page_id, wksp.page_namespace,wksp.user_id).where("user_id> 0")
+
+#verification structure
+d1.printSchema()
+
+#root
+# |-- page_id: long (nullable = true)
+# |-- page_namespace: long (nullable = true)
+# |-- user_id: long (nullable = true)
+
+#verification premier element
+d1.take(1)
+# affichage : Row(page_id=199, page_namespace=0, user_id=1)]
+    
+#creation du dictionnaire de page --> contributeurs
+
+r1=d1.rdd.map(lambda r :((r.page_id,r.page_namespace),[r.user_id]))
+
+r2=r1.reduceByKey(lambda v1,v2 : v1 + v2 )
+
+d = {}
+for (k, v) in r2.collect():
+	d[k] = v
+
+#creation du dictionnaire de contributeurs--> page
+a1=d1.rdd.map(decompose)
+a2=a1.reduceByKey(lambda v1, v2 : v1+v2)	
+d2 = {}
+for (k, v) in a2.collect():
+	d2[k] = v
+
+
+def decompose ( ligne ):
+	return (ligne.user_id,[(ligne.page_id,ligne.page_namespace)])
+
+
+#classifier
+#creation de la liste namespace
+	
+
+	
+import numpy as np
+
+def namespacePrep(d2):
+	dicprep = d2.copy()
+	numfreq ={}
+	numfreq = d2.copy()
+	for (u,w) in numfreq.items():
+		numfreq[u]=[0,0,0,0,0,0]
+	for element in d2.keys():
+		
+		namespace = np.zeros(18)
+		for (k,v) in d2[element]:
+			if v<15:
+				namespace[v+2] = namespace[v+2] + 1
+		i=0
+		liste_namespace=[]
+		while i<3:
+			numfreq[element][2*i]= namespace.argmax()
+			if float(namespace.sum()) !=0:
+				numfreq[element][2*i+1]=float(namespace[namespace.argmax()])/float(namespace.sum())
+				#print(numfreq[element][i+1])
+			else:
+				numfreq[element][i+1] =0
+			namespace[namespace.argmax()] = 0
+			if numfreq[element][2*i+1]>0.3:
+				liste_namespace= liste_namespace+[numfreq[element][2*i]-2]
+			i=i+1
+		dicprep[element]=liste_namespace
+	return dicprep
+
+
+dicprep = namespacePrep(d2)
+
+
+
+
+
+# Creation d'un dataframe bis avec les attributs page_id, revision, user_id
+d3=wksp.select(wksp.page_id, wksp.id,wksp.user_id,wksp.minor).where("user_id> 0")
+
+
+
+def decompose2 ( ligne ):
+	return (ligne.user_id,[(ligne.page_id,ligne.id,ligne.minor)])
+a3=d3.rdd.map(decompose2)
+a4=a3.reduceByKey(lambda v1, v2 : v1+v2)	
+d4 = {}
+for (k, v) in a4.collect():
+	d4[k] = v
+
+
+def tscore(d4):
+	tscore=d4.copy()
+	for (k,v) in d4.items():
+		stock =0
+		for (u,w,x) in d4[k]:
+			stock= stock +int(not(x))
+		tscore[k]=stock
+	return tscore
+
+
+tscore=tscore(d4)
+
+
+# Creation d'un dataframe bis avec les attributs page_id, id, sha1,minor
+d5=wksp.select(wksp.page_id, wksp.id,wksp.sha1,wksp.minor,wksp.user_id,wksp.timestamp).where("user_id> 0")
+
+def decompose3 ( ligne ):
+	return (ligne.page_id,[(ligne.id,ligne.sha1,ligne.minor)])
+a5=d5.rdd.map(decompose3)
+a6=a5.reduceByKey(lambda v1, v2 : v1+v2)	
+d6 = {}
+for (k, v) in a6.collect():
+	d6[k] = v
+
+
+
+#creation du classifier
+
+def classifier(dicprep,tscore,nombre,nombre2):
+	diclass=dicprep.copy()
+	article=0
+	social=0
+	talker=0
+	helper=0
+	minor=0
+	for (k,v) in dicprep.items():
+		if tscore[k]>nombre:
+			if v[0]==0:
+				diclass[k]="article contributor"
+				article=article+1
+			elif v[0]==3:
+				diclass[k]="social networker"
+				social=social+1
+			elif v[0]==1:
+				diclass[k]="talker"
+				talker=talker+1
+			elif v[0]==13:
+				diclass[k]="helper"
+				helper=helper+1
+		else :
+			diclass[k]="minor contributor"
+			minor=minor+1
+		if len(v)>2 and tscore[k]>nombre2:
+			if v[1]==1:
+				talker=talker+1
+			if v[1]==13:
+				helper=helper+1
+	print("article contributor",article)
+	print("social networker",social)
+	print("talker",talker)
+	print("helper",helper)
+	print("minor contributor",minor)
+	return diclass
+diclass=classifier(dicprep,tscore,300,50)
+
+i=0
+for (k,v) in diclass.items():
+	i=i+1
+	print v
+	if i>20:
+		break
